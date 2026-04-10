@@ -1,0 +1,137 @@
+// Version: 1.0.0
+type AlertSeverity__79636275 = {#Critical; #High; #Low; #Medium};
+type AnomalyType__583820338 =
+  {
+    #Accident;
+    #Animal;
+    #EmergencyVehicle;
+    #Obstacle;
+    #Pedestrian;
+    #VehicleBreakdown
+  };
+type Anomaly__128739023 =
+  {
+    anomalyType : AnomalyType__583820338;
+    description : Text;
+    detectedAt : Int;
+    id : Text;
+    isActive : Bool;
+    reasoning : Text;
+    segmentId : Text;
+    severity : AlertSeverity__79636275
+  };
+type EmergencyAlert__798753826 =
+  {
+    description : Text;
+    id : Text;
+    isActive : Bool;
+    priority : Nat;
+    recommendedAction : Text;
+    segmentId : Text;
+    triggeredAt : Int;
+    vehicleType : Text
+  };
+type IncidentStatus__148048376 = {#Pending; #Rejected; #Resolved; #Validated};
+type Incident__629063041 =
+  {
+    id : Text;
+    incidentType : Text;
+    reportedAt : Int;
+    reporterNote : Text;
+    segmentId : Text;
+    status : IncidentStatus__148048376;
+    validatedAt : ?Int;
+    validationScore : Nat
+  };
+type Nat__490723111 = Nat__920180692;
+type Nat__920180692 = Nat;
+type Route__1023606527 =
+  {
+    alternateOf : ?Text;
+    estimatedMinutes : Nat;
+    fromDistrict : Text;
+    id : Text;
+    isOptimal : Bool;
+    name : Text;
+    reasoning : Text;
+    segments : [Text];
+    toDistrict : Text;
+    totalDistance : Float
+  };
+type SystemComponent__265905969 =
+  {
+    componentType : Text;
+    failureCount : Nat;
+    id : Text;
+    lastChecked : Int;
+    name : Text;
+    status : SystemStatus__873325254;
+    uptimePct : Float
+  };
+type SystemStatus__873325254 =
+  {#Degraded; #Failed; #Maintenance; #Operational};
+type TrafficLevel__470912964 = {#High; #Low; #Medium; #NoTraffic};
+type TrafficSegment__528705343 =
+  {
+    avgSpeed : Float;
+    congestionPct : Nat;
+    district : Text;
+    id : Text;
+    lat : Float;
+    lon : Float;
+    name : Text;
+    trafficLevel : TrafficLevel__470912964;
+    vehicleCount : Nat;
+    waitTimeSeconds : Nat
+  };
+type WeatherCondition__560745054 = {#Clear; #Fog; #Rain; #Snow; #Storm};
+type WeatherData__16756760 =
+  {
+    affectedDistricts : [Text];
+    condition : WeatherCondition__560745054;
+    recommendation : Text;
+    temperature : Float;
+    updatedAt : Int;
+    visibility : Nat;
+    windSpeed : Float
+  };
+actor {
+  stable anomalies :
+    {
+      var blockIndex : Nat__490723111;
+      var blocks : [var [var ?Anomaly__128739023]];
+      var elementIndex : Nat__490723111
+    };
+  stable components :
+    {
+      var blockIndex : Nat__490723111;
+      var blocks : [var [var ?SystemComponent__265905969]];
+      var elementIndex : Nat__490723111
+    };
+  stable counters : {var incidentCounter : Nat; var tickCounter : Nat};
+  stable emergencies :
+    {
+      var blockIndex : Nat__490723111;
+      var blocks : [var [var ?EmergencyAlert__798753826]];
+      var elementIndex : Nat__490723111
+    };
+  stable incidents :
+    {
+      var blockIndex : Nat__490723111;
+      var blocks : [var [var ?Incident__629063041]];
+      var elementIndex : Nat__490723111
+    };
+  stable routes :
+    {
+      var blockIndex : Nat__490723111;
+      var blocks : [var [var ?Route__1023606527]];
+      var elementIndex : Nat__490723111
+    };
+  stable segments :
+    {
+      var blockIndex : Nat__490723111;
+      var blocks : [var [var ?TrafficSegment__528705343]];
+      var elementIndex : Nat__490723111
+    };
+  stable weather : {var data : WeatherData__16756760}
+};

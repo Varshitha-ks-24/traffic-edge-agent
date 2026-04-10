@@ -1,0 +1,154 @@
+type WeatherData = 
+ record {
+   affectedDistricts: vec text;
+   condition: WeatherCondition;
+   recommendation: text;
+   temperature: float64;
+   updatedAt: int;
+   visibility: nat;
+   windSpeed: float64;
+ };
+type WeatherCondition = 
+ variant {
+   Clear;
+   Fog;
+   Rain;
+   Snow;
+   Storm;
+ };
+type TrafficSnapshot = 
+ record {
+   activeAnomalies: vec Anomaly;
+   activeEmergencies: vec EmergencyAlert;
+   segments: vec TrafficSegment;
+   systemHealth: nat;
+   timestamp: int;
+   weather: WeatherData;
+ };
+type TrafficSegment = 
+ record {
+   avgSpeed: float64;
+   congestionPct: nat;
+   district: text;
+   id: text;
+   lat: float64;
+   lon: float64;
+   name: text;
+   trafficLevel: TrafficLevel;
+   vehicleCount: nat;
+   waitTimeSeconds: nat;
+ };
+type TrafficLevel = 
+ variant {
+   High;
+   Low;
+   Medium;
+   NoTraffic;
+ };
+type SystemStatus = 
+ variant {
+   Degraded;
+   Failed;
+   Maintenance;
+   Operational;
+ };
+type SystemComponent = 
+ record {
+   componentType: text;
+   failureCount: nat;
+   id: text;
+   lastChecked: int;
+   name: text;
+   status: SystemStatus;
+   uptimePct: float64;
+ };
+type Route = 
+ record {
+   alternateOf: opt text;
+   estimatedMinutes: nat;
+   fromDistrict: text;
+   id: text;
+   isOptimal: bool;
+   name: text;
+   reasoning: text;
+   segments: vec text;
+   toDistrict: text;
+   totalDistance: float64;
+ };
+type IncidentStatus = 
+ variant {
+   Pending;
+   Rejected;
+   Resolved;
+   Validated;
+ };
+type Incident = 
+ record {
+   id: text;
+   incidentType: text;
+   reportedAt: int;
+   reporterNote: text;
+   segmentId: text;
+   status: IncidentStatus;
+   validatedAt: opt int;
+   validationScore: nat;
+ };
+type EmergencyAlert = 
+ record {
+   description: text;
+   id: text;
+   isActive: bool;
+   priority: nat;
+   recommendedAction: text;
+   segmentId: text;
+   triggeredAt: int;
+   vehicleType: text;
+ };
+type AnomalyType = 
+ variant {
+   Accident;
+   Animal;
+   EmergencyVehicle;
+   Obstacle;
+   Pedestrian;
+   VehicleBreakdown;
+ };
+type Anomaly = 
+ record {
+   anomalyType: AnomalyType;
+   description: text;
+   detectedAt: int;
+   id: text;
+   isActive: bool;
+   reasoning: text;
+   segmentId: text;
+   severity: AlertSeverity;
+ };
+type AlertSeverity = 
+ variant {
+   Critical;
+   High;
+   Low;
+   Medium;
+ };
+service : {
+  acknowledgeEmergency: (alertId: text) -> (bool);
+  computeOptimalRoute: (fromDistrict: text, toDistrict: text) ->
+   (opt Route) query;
+  getAnomalies: (activeOnly: bool) -> (vec Anomaly) query;
+  getEmergencyAlerts: (activeOnly: bool) -> (vec EmergencyAlert) query;
+  getIncidents: () -> (vec Incident) query;
+  getRoutes: () -> (vec Route) query;
+  getSegments: () -> (vec TrafficSegment) query;
+  getSystemComponents: () -> (vec SystemComponent) query;
+  getTrafficSnapshot: () -> (TrafficSnapshot) query;
+  getWaitTimeEstimate: (segmentId: text) -> (nat) query;
+  getWeather: () -> (WeatherData) query;
+  reportIncident: (segmentId: text, incidentType: text, reporterNote:
+   text) -> (Incident);
+  resetSimulation: () -> ();
+  resolveAnomaly: (anomalyId: text) -> (bool);
+  simulateTick: () -> ();
+  triggerEmergencySimulation: (segmentId: text, vehicleType: text) ->
+   (EmergencyAlert);
+}
