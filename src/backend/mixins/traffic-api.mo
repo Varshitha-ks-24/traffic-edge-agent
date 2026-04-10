@@ -6,6 +6,7 @@ import Time "mo:core/Time";
 import Nat "mo:core/Nat";
 import Int "mo:core/Int";
 import Text "mo:core/Text";
+import Runtime "mo:core/Runtime";
 
 mixin (
   segments : List.List<Types.TrafficSegment>,

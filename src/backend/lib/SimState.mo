@@ -214,13 +214,13 @@ module {
         let candidates = routes.filter(func(r : Types.Route) : Bool {
           Text.equal(r.fromDistrict, pair.0) and Text.equal(r.toDistrict, pair.1)
         });
-        let best = candidates.foldLeft<?(Types.Route), Types.Route>(
+        let best = candidates.foldLeft(
           null,
-          func(acc, r) {
+          func(acc : ?(Types.Route), r : Types.Route) : ?(Types.Route) {
             switch acc {
               case null { ?r };
-              case (?best) {
-                if (r.estimatedMinutes < best.estimatedMinutes) { ?r } else { acc };
+              case (?bestSoFar) {
+                if (r.estimatedMinutes < bestSoFar.estimatedMinutes) { ?r } else { acc };
               };
             };
           },

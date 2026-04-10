@@ -81,6 +81,10 @@ export default {
         xs: "0 1px 2px 0 rgba(0,0,0,0.05)",
         "card-dark": "0 0 20px rgba(98, 213, 228, 0.1), inset 0 1px 0 rgba(255,255,255,0.02)",
         "accent-glow": "0 0 12px rgba(184, 134, 11, 0.3)",
+        "elevation-1": "0 0 12px rgba(98, 213, 228, 0.08)",
+        "elevation-2": "0 0 24px rgba(98, 213, 228, 0.12)",
+        "alert-amber": "0 0 16px rgba(184, 134, 11, 0.2), inset 0 1px 0 rgba(255,255,255,0.01)",
+        "alert-red": "0 0 16px rgba(220, 38, 38, 0.2), inset 0 1px 0 rgba(255,255,255,0.01)",
       },
       keyframes: {
         "accordion-down": {

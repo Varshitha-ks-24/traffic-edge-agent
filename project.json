@@ -1,27 +1,25 @@
 {
-  "overview": "Autonomous Edge-Case Traffic Agent — a simulation-based intelligent traffic management platform with real-time traffic flow prediction, anomaly detection, adaptive vehicle rerouting, emergency response prioritization, human feedback integration, weather-aware intelligence, system health monitoring, and predictive wait time estimation.",
+  "overview": "A real-time autonomous traffic intelligence platform that simulates, predicts, and responds to both routine and edge-case traffic conditions using AI-driven decision making. Features a command-center style dashboard with live maps, anomaly detection, adaptive rerouting, emergency response, incident reporting, weather intelligence, and system health monitoring — all powered by procedural simulation refreshing every 5 seconds.",
   "features": [
-    "Real-time traffic flow simulation with ML-style High/Medium/Low classification",
-    "Edge-case anomaly detection with instant alerts for accidents, obstacles, pedestrians",
-    "Adaptive vehicle rerouting engine using graph pathfinding (A*/Dijkstra simulation)",
-    "Emergency vehicle detection and priority routing with signal adjustment",
-    "Human-in-the-loop incident reporting with crowd-source validation",
-    "Weather-aware traffic intelligence with disruption predictions",
-    "System health monitoring dashboard for sensors and AI modules",
-    "Predictive waiting time and congestion delay estimation with explainability",
-    "Multi-district city simulation with real-time polling updates",
-    "Color-coded interactive traffic map with animated live data"
+    "Live traffic map with color-coded High/Medium/Low congestion across city districts updating every 5 seconds",
+    "Anomaly detection panel for accidents, pedestrians, obstacles, and animals with severity filtering",
+    "Adaptive rerouting engine with explainable AI reasoning for alternative paths",
+    "Emergency response dashboard with signal grid simulation and priority vehicle detection",
+    "Crowd-sourced incident reporting with AI validation scoring",
+    "Weather intelligence panel showing real-time conditions and route impact",
+    "System health monitor with component uptime tracking and predictive wait times",
+    "Predictive wait time estimates per intersection with weather-adjusted calculations"
   ],
-  "category": "transportation-smart-city",
+  "category": "smart-city-traffic-management",
   "tags": [
     "traffic",
     "ai",
     "simulation",
     "real-time",
     "smart-city",
-    "autonomous",
-    "analytics",
-    "dashboard"
+    "anomaly-detection",
+    "routing",
+    "emergency-response"
   ],
-  "last_updated": "2026-04-10T10:03:51.107Z"
+  "last_updated": "2026-04-10T17:34:28.181Z"
 }

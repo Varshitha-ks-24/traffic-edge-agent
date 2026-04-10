@@ -1,40 +1,30 @@
 import { MetricCard } from "@/components/ui/MetricCard";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { Badge } from "@/components/ui/badge";
-import { Progress } from "@/components/ui/progress";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useSimulationStore } from "@/lib/simulationStore";
 import { getSystemComponents, getWaitTimeEstimate } from "@/lib/trafficApi";
+import { cn } from "@/lib/utils";
 import type { SystemComponent, TrafficSegment } from "@/types/traffic";
-import { SystemStatus } from "@/types/traffic";
+import { SystemStatus, TrafficLevel } from "@/types/traffic";
 import {
+  Activity,
   AlertTriangle,
   CheckCircle2,
   Clock,
+  Cpu,
   Database,
+  Globe,
+  Radio,
   RefreshCw,
   Server,
   Shield,
-  Wifi,
+  Timer,
   XCircle,
   Zap,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  Area,
-  AreaChart,
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  Legend,
-  Pie,
-  PieChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -42,317 +32,731 @@ interface WaitEstimate {
   segmentId: string;
   segmentName: string;
   district: string;
-  waitSeconds: number;
   congestionPct: number;
-  congestionWait: number;
+  baseWait: number;
   weatherImpact: number;
+  total: number;
   trafficLevel: string;
 }
 
-interface AlertEvent {
+interface LogEntry {
   id: string;
-  ts: Date;
-  component: string;
+  ts: string;
+  componentName: string;
   event: string;
+  severity: "Critical" | "High" | "Medium" | "Low";
   action: string;
-  severity: "info" | "warn" | "error";
 }
 
-interface UptimePoint {
-  tick: number;
-  Sensor: number;
-  "AI Model": number;
-  API: number;
-  Database: number;
+interface UptimeSeries {
+  points: number[];
 }
+
+// ─── Config ───────────────────────────────────────────────────────────────────
+
+const STATUS_GLOW: Record<string, string> = {
+  [SystemStatus.Operational]:
+    "border-primary/35 shadow-[0_0_16px_rgba(98,213,228,0.16)]",
+  [SystemStatus.Degraded]:
+    "border-accent/40 shadow-[0_0_16px_rgba(217,170,59,0.2)]",
+  [SystemStatus.Failed]:
+    "border-destructive/50 shadow-[0_0_16px_rgba(220,60,60,0.28)]",
+  [SystemStatus.Maintenance]: "border-border/60",
+};
+
+const STATUS_DOT: Record<string, string> = {
+  [SystemStatus.Operational]: "bg-primary animate-pulse",
+  [SystemStatus.Degraded]: "bg-accent animate-pulse",
+  [SystemStatus.Failed]: "bg-destructive animate-pulse",
+  [SystemStatus.Maintenance]: "bg-muted-foreground",
+};
+
+const SEVERITY_TEXT: Record<string, string> = {
+  Critical: "text-destructive",
+  High: "text-destructive/80",
+  Medium: "text-accent",
+  Low: "text-primary",
+};
+
+const SEVERITY_BORDER: Record<string, string> = {
+  Critical: "border-l-destructive bg-destructive/5",
+  High: "border-l-destructive/60",
+  Medium: "border-l-accent bg-accent/5",
+  Low: "border-l-primary/50",
+};
+
+const CONGESTION_COLOR: Record<string, string> = {
+  [TrafficLevel.High]: "text-destructive",
+  [TrafficLevel.Medium]: "text-accent",
+  [TrafficLevel.Low]: "text-primary",
+  [TrafficLevel.NoTraffic]: "text-muted-foreground",
+};
+
+function componentIcon(type: string) {
+  const t = type.toLowerCase();
+  if (t === "sensor") return Radio;
+  if (t.includes("ai")) return Cpu;
+  if (t === "database") return Database;
+  if (t === "api") return Globe;
+  return Server;
+}
+
+// ─── Synthetic Data ───────────────────────────────────────────────────────────
+
+const FALLBACK_COMPONENTS: SystemComponent[] = [
+  {
+    id: "s1",
+    name: "Sensor Node Alpha",
+    componentType: "Sensor",
+    status: SystemStatus.Operational,
+    uptimePct: 99.1,
+    lastChecked: BigInt(Date.now() - 12_000) * 1_000_000n,
+    failureCount: 0n,
+  },
+  {
+    id: "s2",
+    name: "Sensor Node Beta",
+    componentType: "Sensor",
+    status: SystemStatus.Degraded,
+    uptimePct: 87.3,
+    lastChecked: BigInt(Date.now() - 45_000) * 1_000_000n,
+    failureCount: 2n,
+  },
+  {
+    id: "s3",
+    name: "Sensor Node Gamma",
+    componentType: "Sensor",
+    status: SystemStatus.Operational,
+    uptimePct: 98.7,
+    lastChecked: BigInt(Date.now() - 8_000) * 1_000_000n,
+    failureCount: 0n,
+  },
+  {
+    id: "s4",
+    name: "Sensor Node Delta",
+    componentType: "Sensor",
+    status: SystemStatus.Failed,
+    uptimePct: 41.2,
+    lastChecked: BigInt(Date.now() - 120_000) * 1_000_000n,
+    failureCount: 7n,
+  },
+  {
+    id: "ai1",
+    name: "Vision AI Engine",
+    componentType: "AI Model",
+    status: SystemStatus.Operational,
+    uptimePct: 99.8,
+    lastChecked: BigInt(Date.now() - 5_000) * 1_000_000n,
+    failureCount: 0n,
+  },
+  {
+    id: "ai2",
+    name: "Prediction AI Model",
+    componentType: "AI Model",
+    status: SystemStatus.Maintenance,
+    uptimePct: 95.0,
+    lastChecked: BigInt(Date.now() - 600_000) * 1_000_000n,
+    failureCount: 1n,
+  },
+  {
+    id: "db1",
+    name: "Traffic Database",
+    componentType: "Database",
+    status: SystemStatus.Operational,
+    uptimePct: 99.9,
+    lastChecked: BigInt(Date.now() - 3_000) * 1_000_000n,
+    failureCount: 0n,
+  },
+  {
+    id: "api1",
+    name: "REST API Gateway",
+    componentType: "API",
+    status: SystemStatus.Operational,
+    uptimePct: 99.5,
+    lastChecked: BigInt(Date.now() - 7_000) * 1_000_000n,
+    failureCount: 0n,
+  },
+];
+
+const FALLBACK_SEGMENTS: TrafficSegment[] = [
+  {
+    id: "sg1",
+    name: "Main St / 5th Ave",
+    district: "Downtown",
+    congestionPct: 78n,
+    waitTimeSeconds: 95n,
+    trafficLevel: TrafficLevel.High,
+    avgSpeed: 12,
+    lat: 0,
+    lon: 0,
+    vehicleCount: 120n,
+  },
+  {
+    id: "sg2",
+    name: "Harbor Bridge",
+    district: "Port Area",
+    congestionPct: 52n,
+    waitTimeSeconds: 60n,
+    trafficLevel: TrafficLevel.Medium,
+    avgSpeed: 28,
+    lat: 0,
+    lon: 0,
+    vehicleCount: 75n,
+  },
+  {
+    id: "sg3",
+    name: "University Blvd",
+    district: "Midtown",
+    congestionPct: 34n,
+    waitTimeSeconds: 35n,
+    trafficLevel: TrafficLevel.Low,
+    avgSpeed: 42,
+    lat: 0,
+    lon: 0,
+    vehicleCount: 40n,
+  },
+  {
+    id: "sg4",
+    name: "Industrial Ring Rd",
+    district: "East Side",
+    congestionPct: 89n,
+    waitTimeSeconds: 130n,
+    trafficLevel: TrafficLevel.High,
+    avgSpeed: 8,
+    lat: 0,
+    lon: 0,
+    vehicleCount: 200n,
+  },
+  {
+    id: "sg5",
+    name: "Westside Expressway",
+    district: "West End",
+    congestionPct: 20n,
+    waitTimeSeconds: 18n,
+    trafficLevel: TrafficLevel.Low,
+    avgSpeed: 65,
+    lat: 0,
+    lon: 0,
+    vehicleCount: 22n,
+  },
+  {
+    id: "sg6",
+    name: "Central Park Loop",
+    district: "Uptown",
+    congestionPct: 61n,
+    waitTimeSeconds: 72n,
+    trafficLevel: TrafficLevel.Medium,
+    avgSpeed: 22,
+    lat: 0,
+    lon: 0,
+    vehicleCount: 88n,
+  },
+  {
+    id: "sg7",
+    name: "Airport Connector",
+    district: "North Gate",
+    congestionPct: 45n,
+    waitTimeSeconds: 50n,
+    trafficLevel: TrafficLevel.Medium,
+    avgSpeed: 35,
+    lat: 0,
+    lon: 0,
+    vehicleCount: 55n,
+  },
+  {
+    id: "sg8",
+    name: "Riverside Drive",
+    district: "South Bank",
+    congestionPct: 9n,
+    waitTimeSeconds: 10n,
+    trafficLevel: TrafficLevel.NoTraffic,
+    avgSpeed: 72,
+    lat: 0,
+    lon: 0,
+    vehicleCount: 8n,
+  },
+];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function cn(...classes: (string | undefined | false)[]): string {
-  return classes.filter(Boolean).join(" ");
+function relativeTime(ns: bigint): string {
+  const diff = Date.now() - Number(ns) / 1_000_000;
+  if (diff < 60_000) return `${Math.floor(diff / 1000)}s ago`;
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  return `${Math.floor(diff / 3_600_000)}h ago`;
 }
 
-const COMPONENT_ICONS: Record<string, React.ReactNode> = {
-  Sensor: <Wifi className="h-4 w-4" />,
-  "AI Model": <Zap className="h-4 w-4" />,
-  API: <Server className="h-4 w-4" />,
-  Database: <Database className="h-4 w-4" />,
-};
-
-const STATUS_ICON_COLOR: Record<string, string> = {
-  Operational: "text-primary",
-  Degraded: "text-accent",
-  Failed: "text-destructive",
-  Maintenance: "text-muted-foreground",
-};
-
-const STATUS_BORDER: Record<string, string> = {
-  Operational: "border-primary/25",
-  Degraded: "border-accent/30",
-  Failed: "border-destructive/40",
-  Maintenance: "border-border",
-};
-
-const ALERT_DOT: Record<AlertEvent["severity"], string> = {
-  info: "bg-primary",
-  warn: "bg-accent",
-  error: "bg-destructive",
-};
-
-const ALERT_LABEL: Record<AlertEvent["severity"], string> = {
-  info: "text-primary",
-  warn: "text-accent",
-  error: "text-destructive",
-};
-
-function relativeTime(ts: bigint): string {
-  const diffMs = Date.now() - Number(ts) / 1_000_000;
-  const diffSec = Math.floor(diffMs / 1000);
-  if (diffSec < 60) return `${diffSec}s ago`;
-  const diffMin = Math.floor(diffSec / 60);
-  if (diffMin < 60) return `${diffMin}m ago`;
-  return `${Math.floor(diffMin / 60)}h ago`;
-}
-
-function jitter(base: number): number {
-  return Math.min(100, Math.max(70, base + (Math.random() * 4 - 2)));
-}
-
-function buildUptimeHistory(components: SystemComponent[]): UptimePoint[] {
-  const types = ["Sensor", "AI Model", "API", "Database"] as const;
-  const baseMap: Record<string, number> = {};
-  for (const t of types) {
-    const matching = components.filter((c) => c.componentType === t);
-    baseMap[t] =
-      matching.length > 0
-        ? matching.reduce((s, c) => s + c.uptimePct, 0) / matching.length
-        : 97;
+function buildUptimeSeries(base: number, status: string): UptimeSeries {
+  const pts: number[] = [];
+  let v = base;
+  const variance =
+    status === SystemStatus.Failed
+      ? 22
+      : status === SystemStatus.Degraded
+        ? 10
+        : 3;
+  for (let i = 0; i < 20; i++) {
+    v = Math.max(0, Math.min(100, v + (Math.random() - 0.5) * variance));
+    pts.push(v);
   }
-  const sensor = baseMap.Sensor ?? 97;
-  const aiModel = baseMap["AI Model"] ?? 97;
-  const api = baseMap.API ?? 97;
-  const database = baseMap.Database ?? 97;
-  return Array.from({ length: 24 }, (_, i) => ({
-    tick: i + 1,
-    Sensor: jitter(sensor),
-    "AI Model": jitter(aiModel),
-    API: jitter(api),
-    Database: jitter(database),
-  }));
+  return { points: pts };
 }
 
-function generateAlerts(components: SystemComponent[]): AlertEvent[] {
-  const events: AlertEvent[] = [];
+function buildWaitEstimates(
+  segments: TrafficSegment[],
+  overrides: Record<string, number>,
+): WaitEstimate[] {
+  return segments.map((seg) => {
+    const baseWait =
+      overrides[seg.id] !== undefined
+        ? overrides[seg.id]
+        : Number(seg.waitTimeSeconds);
+    const weatherImpact =
+      seg.trafficLevel === TrafficLevel.High
+        ? 45
+        : seg.trafficLevel === TrafficLevel.Medium
+          ? 20
+          : 5;
+    return {
+      segmentId: seg.id,
+      segmentName: seg.name,
+      district: seg.district,
+      congestionPct: Number(seg.congestionPct),
+      baseWait,
+      weatherImpact,
+      total: baseWait + weatherImpact,
+      trafficLevel: seg.trafficLevel,
+    };
+  });
+}
+
+function generateLogEntries(components: SystemComponent[]): LogEntry[] {
+  const entries: LogEntry[] = [];
   const now = Date.now();
-  components.forEach((c, idx) => {
-    if (c.status === SystemStatus.Degraded) {
-      events.push({
-        id: `degraded-${c.id}`,
-        ts: new Date(now - idx * 45_000),
-        component: c.name,
-        event: `Performance degraded — ${c.componentType} latency elevated`,
-        action: "Fallback routing activated",
-        severity: "warn",
+  components.forEach((comp, idx) => {
+    if (comp.status === SystemStatus.Failed) {
+      entries.push({
+        id: `fail-${comp.id}`,
+        ts: new Date(now - idx * 25_000).toLocaleTimeString(),
+        componentName: comp.name,
+        event: `OFFLINE — ${Number(comp.failureCount)} consecutive failure(s) recorded. Last uptime: ${comp.uptimePct.toFixed(1)}%`,
+        severity: "Critical",
+        action:
+          "Initiate manual restart; escalate to on-call engineer immediately",
       });
     }
-    if (c.status === SystemStatus.Failed) {
-      events.push({
-        id: `failed-${c.id}`,
-        ts: new Date(now - idx * 30_000),
-        component: c.name,
-        event: `Component offline — ${String(c.failureCount)} consecutive failures`,
-        action: "Redundant node promoted, alert dispatched",
-        severity: "error",
+    if (comp.status === SystemStatus.Degraded) {
+      entries.push({
+        id: `deg-${comp.id}`,
+        ts: new Date(now - idx * 55_000).toLocaleTimeString(),
+        componentName: comp.name,
+        event: `Performance degraded — uptime dropped to ${comp.uptimePct.toFixed(1)}%`,
+        severity: "Medium",
+        action:
+          "Monitor for 10 min; trigger diagnostic if uptime falls below 85%",
       });
     }
-    if (c.status === SystemStatus.Maintenance) {
-      events.push({
-        id: `maint-${c.id}`,
-        ts: new Date(now - idx * 120_000),
-        component: c.name,
-        event: "Scheduled maintenance window started",
-        action: "Traffic rerouted via secondary path",
-        severity: "info",
+    if (comp.status === SystemStatus.Maintenance) {
+      entries.push({
+        id: `maint-${comp.id}`,
+        ts: new Date(now - idx * 120_000).toLocaleTimeString(),
+        componentName: comp.name,
+        event:
+          "Scheduled maintenance window active — component offline by design",
+        severity: "Low",
+        action: "Standby — automated recovery expected within scheduled window",
+      });
+    }
+    if (
+      Number(comp.failureCount) > 0 &&
+      comp.status === SystemStatus.Operational
+    ) {
+      entries.push({
+        id: `rec-${comp.id}`,
+        ts: new Date(now - idx * 90_000).toLocaleTimeString(),
+        componentName: comp.name,
+        event: `Recovered — ${Number(comp.failureCount)} historical fault(s) on record`,
+        severity: "Low",
+        action:
+          "Verify stability over next 30 min; clear alert after confirmation",
       });
     }
   });
-  const ok = components.filter((c) => c.status === SystemStatus.Operational);
-  ok.slice(0, 6).forEach((c, idx) => {
-    events.push({
-      id: `ok-${c.id}`,
-      ts: new Date(now - (idx + 1) * 90_000),
-      component: c.name,
-      event: "Heartbeat check passed — all metrics nominal",
-      action: "No action required",
-      severity: "info",
-    });
-  });
-  return events.sort((a, b) => b.ts.getTime() - a.ts.getTime()).slice(0, 10);
-}
-
-function buildWaitEstimate(seg: TrafficSegment, rawWait: number): WaitEstimate {
-  const weatherImpact =
-    seg.trafficLevel === "High" ? 28 : seg.trafficLevel === "Medium" ? 14 : 5;
-  const congestionWait = Math.max(0, rawWait - weatherImpact);
-  return {
-    segmentId: seg.id,
-    segmentName: seg.name,
-    district: seg.district,
-    waitSeconds: rawWait,
-    congestionPct: Number(seg.congestionPct),
-    congestionWait,
-    weatherImpact,
-    trafficLevel: seg.trafficLevel,
+  const order: Record<string, number> = {
+    Critical: 0,
+    High: 1,
+    Medium: 2,
+    Low: 3,
   };
+  return entries.sort(
+    (a, b) => (order[a.severity] ?? 9) - (order[b.severity] ?? 9),
+  );
 }
 
-function waitExplanation(est: WaitEstimate): string {
-  const cLevel =
-    est.congestionPct >= 70
-      ? "High Traffic"
-      : est.congestionPct >= 40
-        ? "Medium Traffic"
-        : "Low Traffic";
-  const weatherNote =
-    est.weatherImpact > 0
-      ? ` + weather reducing avg speed (−${est.weatherImpact}s impact)`
-      : "";
-  return `Wait time at ${est.segmentName} is ${est.waitSeconds}s due to ${est.congestionPct}% congestion (${cLevel})${weatherNote}.`;
-}
+// ─── Uptime Sparkline ─────────────────────────────────────────────────────────
 
-// ─── Health Gauge ─────────────────────────────────────────────────────────────
-
-function HealthGauge({ pct }: { pct: number }) {
-  const color =
-    pct >= 80
-      ? "oklch(0.62 0.25 195)"
-      : pct >= 50
-        ? "oklch(0.72 0.23 55)"
-        : "oklch(0.62 0.24 24)";
-  const data = [
-    { name: "Health", value: pct },
-    { name: "Gap", value: 100 - pct },
-  ];
+function UptimeSparkline({
+  series,
+  status,
+}: { series: UptimeSeries; status: string }) {
+  const W = 100;
+  const H = 28;
+  const { points } = series;
+  const min = Math.min(...points);
+  const max = Math.max(...points, min + 1);
+  const scaleY = (v: number) => H - ((v - min) / (max - min)) * (H - 4) - 2;
+  const pathD = points
+    .map(
+      (v, i) =>
+        `${i === 0 ? "M" : "L"} ${(i / (points.length - 1)) * W} ${scaleY(v)}`,
+    )
+    .join(" ");
+  const areaD = `${pathD} L ${W} ${H} L 0 ${H} Z`;
+  const clr =
+    status === SystemStatus.Operational
+      ? { stroke: "rgba(98,213,228,0.85)", fill: "rgba(98,213,228,0.08)" }
+      : status === SystemStatus.Degraded
+        ? { stroke: "rgba(217,170,59,0.85)", fill: "rgba(217,170,59,0.08)" }
+        : status === SystemStatus.Failed
+          ? { stroke: "rgba(220,60,60,0.85)", fill: "rgba(220,60,60,0.08)" }
+          : {
+              stroke: "rgba(120,120,140,0.55)",
+              fill: "rgba(120,120,140,0.04)",
+            };
   return (
-    <div
-      className="relative flex items-center justify-center"
-      data-ocid="health-gauge"
+    <svg
+      width={W}
+      height={H}
+      className="overflow-visible shrink-0"
+      aria-hidden="true"
     >
-      <ResponsiveContainer width={160} height={160}>
-        <PieChart>
-          <Pie
-            data={data}
-            cx="50%"
-            cy="50%"
-            innerRadius={54}
-            outerRadius={72}
-            startAngle={90}
-            endAngle={-270}
-            dataKey="value"
-            strokeWidth={0}
-          >
-            <Cell fill={color} />
-            <Cell fill="oklch(0.18 0 0)" />
-          </Pie>
-        </PieChart>
-      </ResponsiveContainer>
-      <div className="absolute flex flex-col items-center">
-        <span
-          className="font-display text-3xl font-bold tabular-nums leading-none"
-          style={{ color }}
+      <path d={areaD} fill={clr.fill} />
+      <path
+        d={pathD}
+        fill="none"
+        stroke={clr.stroke}
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+// ─── Health Ring ──────────────────────────────────────────────────────────────
+
+function HealthRing({ pct }: { pct: number }) {
+  const r = 52;
+  const circ = 2 * Math.PI * r;
+  const clamped = Math.max(0, Math.min(100, pct));
+  const dash = (clamped / 100) * circ;
+  const gap = circ - dash;
+  const isGood = clamped > 80;
+  const isMid = clamped > 50 && clamped <= 80;
+  const ringCls = isGood
+    ? "stroke-primary"
+    : isMid
+      ? "stroke-accent"
+      : "stroke-destructive";
+  const valCls = isGood
+    ? "text-primary"
+    : isMid
+      ? "text-accent"
+      : "text-destructive";
+  const label = isGood ? "NOMINAL" : isMid ? "DEGRADED" : "CRITICAL";
+  return (
+    <div className="flex flex-col items-center gap-2" data-ocid="health-ring">
+      <div className="relative">
+        <svg
+          width={128}
+          height={128}
+          viewBox="0 0 128 128"
+          className="-rotate-90"
+          aria-hidden="true"
         >
-          {pct}%
-        </span>
-        <span className="mt-0.5 font-mono text-[9px] uppercase tracking-widest text-muted-foreground">
-          Operational
-        </span>
+          <circle
+            cx={64}
+            cy={64}
+            r={r}
+            fill="none"
+            stroke="rgba(255,255,255,0.05)"
+            strokeWidth={10}
+          />
+          <circle
+            cx={64}
+            cy={64}
+            r={r}
+            fill="none"
+            strokeWidth={10}
+            strokeLinecap="round"
+            strokeDasharray={`${dash} ${gap}`}
+            className={cn("transition-all duration-700", ringCls)}
+          />
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <span
+            className={cn(
+              "font-mono text-[22px] font-bold tabular-nums leading-none",
+              valCls,
+            )}
+          >
+            {clamped}%
+          </span>
+          <span className="font-mono text-[8px] tracking-[0.15em] text-muted-foreground mt-0.5">
+            HEALTH
+          </span>
+        </div>
       </div>
+      <span
+        className={cn(
+          "font-mono text-[9px] font-semibold uppercase tracking-[0.18em]",
+          valCls,
+        )}
+      >
+        {label}
+      </span>
     </div>
   );
 }
 
 // ─── Component Card ───────────────────────────────────────────────────────────
 
-function ComponentCard({ comp }: { comp: SystemComponent }) {
-  const isDegraded = comp.status === SystemStatus.Degraded;
-  const isFailed = comp.status === SystemStatus.Failed;
-  const needsFallback = isDegraded || isFailed;
-  const icon = COMPONENT_ICONS[comp.componentType] ?? (
-    <Shield className="h-4 w-4" />
-  );
-
+function ComponentCard({
+  comp,
+  series,
+}: { comp: SystemComponent; series: UptimeSeries }) {
+  const Icon = componentIcon(comp.componentType);
   return (
     <div
       className={cn(
-        "rounded-lg border bg-card p-4 transition-smooth hover:border-primary/30",
-        STATUS_BORDER[comp.status] ?? "border-border",
+        "relative flex flex-col gap-2.5 rounded-lg border bg-card p-4 transition-smooth",
+        STATUS_GLOW[comp.status] ?? "border-border",
       )}
       data-ocid={`component-card-${comp.id}`}
     >
-      {/* Header */}
-      <div className="mb-3 flex items-start justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-2">
-          <span
-            className={cn(
-              "shrink-0",
-              STATUS_ICON_COLOR[comp.status] ?? "text-muted-foreground",
-            )}
-          >
-            {icon}
-          </span>
-          <span className="min-w-0 truncate text-sm font-semibold text-foreground">
-            {comp.name}
-          </span>
-        </div>
-        <StatusBadge status={comp.status} className="shrink-0" />
-      </div>
-
-      {/* Type + fallback */}
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        <Badge
-          variant="outline"
-          className="border-border font-mono text-[10px] text-muted-foreground"
-        >
-          {comp.componentType}
-        </Badge>
-        {needsFallback && (
-          <span className="flex items-center gap-1 font-mono text-[10px] text-accent">
-            <AlertTriangle className="h-3 w-3" />
-            Fallback active
-          </span>
+      {/* Live dot */}
+      <span
+        className={cn(
+          "absolute right-3 top-3 h-1.5 w-1.5 rounded-full",
+          STATUS_DOT[comp.status] ?? "bg-muted-foreground",
         )}
-      </div>
+      />
 
-      {/* Uptime bar */}
-      <div className="mb-3 space-y-1">
-        <div className="flex justify-between font-mono text-[10px]">
-          <span className="text-muted-foreground">Uptime</span>
-          <span className="tabular-nums text-foreground">
-            {comp.uptimePct.toFixed(1)}%
-          </span>
-        </div>
-        <Progress
-          value={comp.uptimePct}
-          className="h-1.5"
-          data-ocid={`uptime-bar-${comp.id}`}
-        />
-      </div>
-
-      {/* Footer */}
-      <div className="flex items-center justify-between font-mono text-[10px] text-muted-foreground">
-        <span>
-          Failures:{" "}
-          <span
-            className={
-              Number(comp.failureCount) > 0
-                ? "text-destructive"
-                : "text-foreground"
-            }
-          >
-            {String(comp.failureCount)}
-          </span>
+      {/* Icon + name */}
+      <div className="flex items-center gap-2 pr-5">
+        <span className="flex h-7 w-7 items-center justify-center rounded-md bg-muted/60 shrink-0">
+          <Icon className="h-3.5 w-3.5 text-muted-foreground" />
         </span>
-        <span>Checked {relativeTime(comp.lastChecked)}</span>
+        <div className="min-w-0">
+          <p className="truncate text-xs font-semibold text-foreground leading-tight">
+            {comp.name}
+          </p>
+          <p className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground">
+            {comp.componentType}
+          </p>
+        </div>
+      </div>
+
+      <StatusBadge status={comp.status} />
+
+      {/* Uptime + sparkline */}
+      <div className="flex items-end justify-between gap-2">
+        <div>
+          <p className="font-mono text-[9px] uppercase tracking-widest text-muted-foreground">
+            Uptime
+          </p>
+          <p className="font-mono text-sm font-bold tabular-nums text-foreground">
+            {comp.uptimePct.toFixed(1)}%
+          </p>
+        </div>
+        <UptimeSparkline series={series} status={comp.status} />
+      </div>
+
+      {/* Last checked */}
+      <p className="font-mono text-[9px] text-muted-foreground">
+        Checked:{" "}
+        <span className="text-foreground/70">
+          {relativeTime(comp.lastChecked)}
+        </span>
+      </p>
+
+      {/* Alert message */}
+      {comp.status !== SystemStatus.Operational && (
+        <div
+          className={cn(
+            "flex items-start gap-1.5 rounded border px-2 py-1.5",
+            comp.status === SystemStatus.Failed
+              ? "border-destructive/25 bg-destructive/8"
+              : comp.status === SystemStatus.Degraded
+                ? "border-accent/25 bg-accent/8"
+                : "border-border/50 bg-muted/30",
+          )}
+        >
+          <AlertTriangle
+            className={cn(
+              "mt-0.5 h-3 w-3 shrink-0",
+              comp.status === SystemStatus.Failed
+                ? "text-destructive"
+                : comp.status === SystemStatus.Degraded
+                  ? "text-accent"
+                  : "text-muted-foreground",
+            )}
+          />
+          <p className="font-mono text-[9px] leading-snug text-foreground/70">
+            {comp.status === SystemStatus.Failed
+              ? `${Number(comp.failureCount)} failure(s) — immediate attention required`
+              : comp.status === SystemStatus.Degraded
+                ? `${Number(comp.failureCount)} fault(s) logged — performance reduced`
+                : "Scheduled downtime — recovery expected within 30 min"}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Wait Time Table ──────────────────────────────────────────────────────────
+
+function WaitTimeTable({ estimates }: { estimates: WaitEstimate[] }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[620px]">
+        <thead>
+          <tr className="border-b border-border/60 bg-muted/30">
+            {[
+              { label: "Segment Name", align: "left" },
+              { label: "District", align: "left" },
+              { label: "Congestion", align: "left" },
+              { label: "Base Wait", align: "right" },
+              { label: "Weather +", align: "right" },
+              { label: "Total Wait", align: "right" },
+            ].map(({ label, align }) => (
+              <th
+                key={label}
+                className={cn(
+                  "px-4 py-2.5 font-mono text-[9px] uppercase tracking-widest text-muted-foreground",
+                  align === "right" ? "text-right" : "text-left",
+                )}
+              >
+                {label}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {estimates.map((est) => {
+            const isHigh = est.total > 120;
+            return (
+              <tr
+                key={est.segmentId}
+                className={cn(
+                  "border-b border-border/30 transition-colors hover:bg-muted/15",
+                  isHigh && "bg-accent/4",
+                )}
+                data-ocid={`wait-row-${est.segmentId}`}
+              >
+                <td className="px-4 py-2.5 font-mono text-[11px] text-foreground">
+                  {est.segmentName}
+                </td>
+                <td className="px-4 py-2.5 font-mono text-[11px] text-muted-foreground">
+                  {est.district}
+                </td>
+                <td className="px-4 py-2.5">
+                  <span
+                    className={cn(
+                      "font-mono text-[11px] font-semibold tabular-nums",
+                      CONGESTION_COLOR[est.trafficLevel],
+                    )}
+                  >
+                    {est.congestionPct}%
+                  </span>
+                </td>
+                <td className="px-4 py-2.5 text-right font-mono text-[11px] tabular-nums text-foreground">
+                  {est.baseWait}s
+                </td>
+                <td className="px-4 py-2.5 text-right font-mono text-[11px] tabular-nums text-accent">
+                  +{est.weatherImpact}s
+                </td>
+                <td className="px-4 py-2.5 text-right">
+                  <span
+                    className={cn(
+                      "font-mono text-[11px] font-bold tabular-nums",
+                      isHigh ? "text-accent" : "text-foreground",
+                    )}
+                  >
+                    {est.total}s
+                  </span>
+                  {isHigh && (
+                    <Badge
+                      variant="outline"
+                      className="ml-2 border-accent/40 bg-accent/10 px-1 py-0 font-mono text-[8px] text-accent"
+                    >
+                      SLOW
+                    </Badge>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ─── Log Entry ────────────────────────────────────────────────────────────────
+
+const SEV_ICON: Record<string, typeof XCircle> = {
+  Critical: XCircle,
+  High: AlertTriangle,
+  Medium: AlertTriangle,
+  Low: CheckCircle2,
+};
+
+function EventLogEntry({ entry }: { entry: LogEntry }) {
+  const SevIcon = SEV_ICON[entry.severity] ?? Activity;
+  return (
+    <div
+      className={cn(
+        "border-l-2 px-4 py-3 transition-colors hover:bg-muted/10",
+        SEVERITY_BORDER[entry.severity],
+      )}
+      data-ocid={`log-entry-${entry.id}`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-2">
+          <SevIcon
+            className={cn(
+              "mt-0.5 h-3.5 w-3.5 shrink-0",
+              SEVERITY_TEXT[entry.severity],
+            )}
+          />
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-mono text-[10px] font-semibold text-foreground/80">
+                {entry.componentName}
+              </span>
+              <span
+                className={cn(
+                  "font-mono text-[9px] uppercase tracking-wider",
+                  SEVERITY_TEXT[entry.severity],
+                )}
+              >
+                {entry.severity}
+              </span>
+            </div>
+            <p className="mt-0.5 font-mono text-[10px] leading-snug text-foreground/70">
+              {entry.event}
+            </p>
+            <p className="mt-1 font-mono text-[9px] leading-snug text-muted-foreground">
+              <span className="text-primary/70">→ </span>
+              {entry.action}
+            </p>
+          </div>
+        </div>
+        <span className="shrink-0 font-mono text-[9px] tabular-nums text-muted-foreground">
+          {entry.ts}
+        </span>
       </div>
     </div>
   );
@@ -363,37 +767,61 @@ function ComponentCard({ comp }: { comp: SystemComponent }) {
 export function Monitor() {
   const { snapshot, actor } = useSimulationStore();
   const [components, setComponents] = useState<SystemComponent[]>([]);
-  const [loadingComps, setLoadingComps] = useState(true);
-  const [waitTimes, setWaitTimes] = useState<WaitEstimate[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [waitEstimates, setWaitEstimates] = useState<WaitEstimate[]>([]);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Stable uptime history — rebuilt only when components change
-  const uptimeHistory = useMemo<UptimePoint[]>(
-    () => buildUptimeHistory(components),
-    [components],
-  );
+  // Stable sparkline series per component
+  const seriesMap = useMemo(() => {
+    const map: Record<string, UptimeSeries> = {};
+    for (const c of components.length > 0 ? components : FALLBACK_COMPONENTS) {
+      map[c.id] = buildUptimeSeries(c.uptimePct, c.status);
+    }
+    return map;
+  }, [components]);
 
-  const alertFeed = useMemo(() => generateAlerts(components), [components]);
+  const displayComponents =
+    components.length > 0 ? components : FALLBACK_COMPONENTS;
 
   const fetchData = useCallback(async () => {
-    if (!actor) return;
+    if (!actor) {
+      // Use synthetic data
+      setComponents([]);
+      setWaitEstimates(
+        buildWaitEstimates(
+          snapshot?.segments?.length ? snapshot.segments : FALLBACK_SEGMENTS,
+          {},
+        ),
+      );
+      setLoading(false);
+      setLastRefresh(new Date());
+      return;
+    }
     try {
       const comps = await getSystemComponents(actor);
       setComponents(comps);
-      setLoadingComps(false);
-      setLastRefresh(new Date());
-
-      const segments: TrafficSegment[] = snapshot?.segments ?? [];
-      const estimates = await Promise.all(
-        segments.map(async (seg) => {
-          const raw = await getWaitTimeEstimate(actor, seg.id);
-          return buildWaitEstimate(seg, Number(raw));
+      const segs: TrafficSegment[] = snapshot?.segments?.length
+        ? snapshot.segments
+        : FALLBACK_SEGMENTS;
+      const overrides: Record<string, number> = {};
+      await Promise.all(
+        segs.map(async (seg) => {
+          try {
+            const raw = await getWaitTimeEstimate(actor, seg.id);
+            overrides[seg.id] = Number(raw);
+          } catch {
+            /* use default */
+          }
         }),
       );
-      setWaitTimes(estimates.sort((a, b) => b.waitSeconds - a.waitSeconds));
+      setWaitEstimates(buildWaitEstimates(segs, overrides));
+      setLastRefresh(new Date());
     } catch {
-      setLoadingComps(false);
+      setComponents([]);
+      setWaitEstimates(buildWaitEstimates(FALLBACK_SEGMENTS, {}));
+    } finally {
+      setLoading(false);
     }
   }, [actor, snapshot?.segments]);
 
@@ -405,41 +833,43 @@ export function Monitor() {
     };
   }, [fetchData]);
 
-  // Summary counts
-  const healthPct = snapshot ? Number(snapshot.systemHealth) : 0;
-  const opCount = components.filter(
+  const displaySegments =
+    waitEstimates.length > 0
+      ? waitEstimates
+      : buildWaitEstimates(FALLBACK_SEGMENTS, {});
+  const healthPct = snapshot ? Number(snapshot.systemHealth) : 72;
+  const logEntries = useMemo(
+    () => generateLogEntries(displayComponents),
+    [displayComponents],
+  );
+
+  const operational = displayComponents.filter(
     (c) => c.status === SystemStatus.Operational,
   ).length;
-  const degCount = components.filter(
+  const degraded = displayComponents.filter(
     (c) => c.status === SystemStatus.Degraded,
   ).length;
-  const failCount = components.filter(
+  const failed = displayComponents.filter(
     (c) => c.status === SystemStatus.Failed,
   ).length;
   const avgUptime =
-    components.length > 0
+    displayComponents.length > 0
       ? (
-          components.reduce((s, c) => s + c.uptimePct, 0) / components.length
+          displayComponents.reduce((s, c) => s + c.uptimePct, 0) /
+          displayComponents.length
         ).toFixed(1)
       : "—";
 
-  const areaColors: Record<string, string> = {
-    Sensor: "oklch(0.62 0.25 195)",
-    "AI Model": "oklch(0.72 0.23 55)",
-    API: "oklch(0.68 0.18 110)",
-    Database: "oklch(0.55 0.15 280)",
-  };
-
   return (
-    <div className="space-y-6 p-6" data-ocid="monitor-page">
+    <div className="flex flex-col gap-6 p-6" data-ocid="monitor-page">
       {/* ── Page Header ── */}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="font-display text-xl font-bold text-foreground">
-            System Reliability &amp; Health Monitor
+            System Monitor
           </h1>
-          <p className="font-mono text-xs text-muted-foreground">
-            REAL-TIME MONITORING — SENSORS · AI MODELS · INFRASTRUCTURE
+          <p className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+            Infrastructure diagnostics · real-time health
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -449,406 +879,397 @@ export function Monitor() {
               {lastRefresh.toLocaleTimeString()} · auto 15s
             </span>
           )}
-          <Badge
-            variant="outline"
-            className="border-primary/40 bg-primary/10 font-mono text-xs text-primary"
-            data-ocid="health-badge"
-          >
-            {healthPct}% HEALTH
-          </Badge>
-        </div>
-      </div>
-
-      {/* ── Overview: Gauge + KPIs ── */}
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-5">
-        {/* Donut gauge */}
-        <div className="col-span-1 flex flex-col items-center justify-center rounded-lg border border-border bg-card py-5">
-          {loadingComps ? (
-            <Skeleton className="h-40 w-40 rounded-full" />
-          ) : (
-            <HealthGauge pct={healthPct} />
-          )}
-          <p className="mt-2 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-            Overall Health Score
-          </p>
-        </div>
-
-        {/* KPI grid */}
-        <div className="col-span-1 grid grid-cols-2 gap-4 md:col-span-4">
-          <MetricCard
-            title="Operational"
-            value={opCount}
-            subtitle={`of ${components.length} components`}
-            trend="neutral"
-            icon={<CheckCircle2 className="h-4 w-4 text-primary" />}
-            data-ocid="metric-operational"
-          />
-          <MetricCard
-            title="Degraded"
-            value={degCount}
-            subtitle="Fallback activated"
-            trend={degCount > 0 ? "up" : "neutral"}
-            icon={<AlertTriangle className="h-4 w-4 text-accent" />}
-            data-ocid="metric-degraded"
-          />
-          <MetricCard
-            title="Failed"
-            value={failCount}
-            subtitle="Requires intervention"
-            trend={failCount > 0 ? "up" : "neutral"}
-            icon={<XCircle className="h-4 w-4 text-destructive" />}
-            data-ocid="metric-failed"
-          />
-          <MetricCard
-            title="Avg Uptime"
-            value={`${avgUptime}%`}
-            subtitle="Network-wide average"
-            trend="neutral"
-            icon={<Clock className="h-4 w-4 text-primary" />}
-            data-ocid="metric-avg-uptime"
-          />
-        </div>
-      </div>
-
-      {/* ── Component Cards ── */}
-      <div className="rounded-lg border border-border bg-card">
-        <div className="flex items-center justify-between border-b border-border px-4 py-3">
-          <div className="flex items-center gap-2">
-            <Server className="h-4 w-4 text-primary" />
-            <span className="font-mono text-xs font-semibold uppercase tracking-wider text-foreground">
-              System Components
+          <span className="flex items-center gap-1.5">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
+            <span className="font-mono text-[10px] uppercase tracking-wider text-primary">
+              Live
             </span>
-          </div>
-          <span className="font-mono text-[10px] text-muted-foreground">
-            {components.length} REGISTERED
           </span>
         </div>
-
-        {loadingComps ? (
-          <div className="grid grid-cols-1 gap-4 p-4 md:grid-cols-2 lg:grid-cols-3">
-            {[1, 2, 3, 4, 5, 6].map((k) => (
-              <Skeleton key={k} className="h-40 rounded-lg" />
-            ))}
-          </div>
-        ) : components.length === 0 ? (
-          <p
-            className="px-4 py-10 text-center font-mono text-xs text-muted-foreground"
-            data-ocid="components-empty"
-          >
-            No component data — click TICK to simulate
-          </p>
-        ) : (
-          <div className="grid grid-cols-1 gap-4 p-4 md:grid-cols-2 lg:grid-cols-3">
-            {components.map((comp) => (
-              <ComponentCard key={comp.id} comp={comp} />
-            ))}
-          </div>
-        )}
       </div>
 
-      {/* ── Alert Feed + Uptime Chart ── */}
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        {/* Alert feed */}
+      {/* ── Overall Stats ── */}
+      <div
+        className="grid grid-cols-2 gap-3 sm:grid-cols-4"
+        data-ocid="system-stats"
+      >
+        <MetricCard
+          title="Operational"
+          value={loading ? "—" : operational}
+          subtitle={`of ${displayComponents.length} components`}
+          icon={<CheckCircle2 className="h-3.5 w-3.5 text-primary" />}
+          colorClass="text-primary"
+          data-ocid="stat-operational"
+        />
+        <MetricCard
+          title="Degraded"
+          value={loading ? "—" : degraded}
+          subtitle="Fallback active"
+          icon={<AlertTriangle className="h-3.5 w-3.5 text-accent" />}
+          colorClass={degraded > 0 ? "text-accent" : undefined}
+          data-ocid="stat-degraded"
+        />
+        <MetricCard
+          title="Failed"
+          value={loading ? "—" : failed}
+          subtitle="Needs intervention"
+          icon={<XCircle className="h-3.5 w-3.5 text-destructive" />}
+          colorClass={failed > 0 ? "text-destructive" : undefined}
+          data-ocid="stat-failed"
+        />
+        <MetricCard
+          title="Avg Uptime"
+          value={loading ? "—" : `${avgUptime}%`}
+          subtitle="Network-wide average"
+          icon={<Activity className="h-3.5 w-3.5 text-primary" />}
+          data-ocid="stat-avg-uptime"
+        />
+      </div>
+
+      {/* ── Health Ring + Component Grid ── */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[160px_1fr]">
+        {/* Health ring panel */}
         <div
-          className="rounded-lg border border-border bg-card"
-          data-ocid="alert-feed"
+          className="flex flex-col items-center justify-start gap-4 rounded-lg border border-border bg-card p-5"
+          data-ocid="health-panel"
         >
-          <div className="flex items-center justify-between border-b border-border px-4 py-3">
-            <div className="flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4 text-accent" />
-              <span className="font-mono text-xs font-semibold uppercase tracking-wider text-foreground">
-                System Event Log
-              </span>
-            </div>
-            <span className="font-mono text-[10px] text-muted-foreground">
-              LAST 10 EVENTS
-            </span>
-          </div>
-          <div className="divide-y divide-border/50">
-            {alertFeed.length === 0 ? (
-              <p className="px-4 py-8 text-center font-mono text-xs text-muted-foreground">
-                No events yet — awaiting system data
-              </p>
-            ) : (
-              alertFeed.map((ev) => (
-                <div
-                  key={ev.id}
-                  className="flex gap-3 px-4 py-3"
-                  data-ocid={`event-${ev.id}`}
-                >
-                  <div
-                    className={cn(
-                      "mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full",
-                      ALERT_DOT[ev.severity],
-                    )}
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-baseline justify-between gap-2">
-                      <span
-                        className={cn(
-                          "font-mono text-[10px] font-semibold",
-                          ALERT_LABEL[ev.severity],
-                        )}
-                      >
-                        {ev.component}
-                      </span>
-                      <span className="shrink-0 font-mono text-[9px] text-muted-foreground">
-                        {ev.ts.toLocaleTimeString()}
+          <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground">
+            Health Score
+          </p>
+          {loading ? (
+            <Skeleton className="h-32 w-32 rounded-full" />
+          ) : (
+            <HealthRing pct={healthPct} />
+          )}
+          <div className="w-full space-y-1.5 border-t border-border/50 pt-3">
+            {(["Sensor", "AI Model", "Database", "API"] as const).map(
+              (type) => {
+                const count = displayComponents.filter((c) =>
+                  type === "AI Model"
+                    ? c.componentType.toLowerCase().includes("ai")
+                    : c.componentType === type,
+                ).length;
+                const IconComp = componentIcon(type);
+                return (
+                  <div key={type} className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <IconComp className="h-3 w-3 text-muted-foreground" />
+                      <span className="font-mono text-[9px] uppercase text-muted-foreground">
+                        {type}
                       </span>
                     </div>
-                    <p className="text-xs text-foreground">{ev.event}</p>
-                    <p className="font-mono text-[10px] text-muted-foreground">
-                      → {ev.action}
-                    </p>
+                    <span className="font-mono text-[10px] font-semibold text-foreground">
+                      {count}
+                    </span>
                   </div>
-                </div>
-              ))
+                );
+              },
             )}
           </div>
         </div>
 
-        {/* Uptime area chart */}
-        <div
-          className="rounded-lg border border-border bg-card"
-          data-ocid="uptime-chart"
-        >
-          <div className="flex items-center justify-between border-b border-border px-4 py-3">
-            <div className="flex items-center gap-2">
-              <Zap className="h-4 w-4 text-primary" />
-              <span className="font-mono text-xs font-semibold uppercase tracking-wider text-foreground">
-                Uptime History — 24 Ticks
-              </span>
-            </div>
+        {/* Component grid */}
+        {loading ? (
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+            {Array.from({ length: 8 }, (_, i) => `sk-comp-${i}`).map((k) => (
+              <Skeleton key={k} className="h-52 rounded-lg" />
+            ))}
           </div>
-          <div className="p-4">
-            <ResponsiveContainer width="100%" height={250}>
-              <AreaChart
-                data={uptimeHistory}
-                margin={{ top: 4, right: 8, left: -20, bottom: 0 }}
-              >
-                <defs>
-                  {Object.entries(areaColors).map(([key, color]) => (
-                    <linearGradient
-                      key={key}
-                      id={`grad-${key.replace(/\s/g, "")}`}
-                      x1="0"
-                      y1="0"
-                      x2="0"
-                      y2="1"
-                    >
-                      <stop offset="5%" stopColor={color} stopOpacity={0.3} />
-                      <stop offset="95%" stopColor={color} stopOpacity={0} />
-                    </linearGradient>
-                  ))}
-                </defs>
-                <CartesianGrid
-                  strokeDasharray="3 3"
-                  stroke="oklch(0.22 0 0)"
-                  vertical={false}
-                />
-                <XAxis
-                  dataKey="tick"
-                  tick={{
-                    fill: "oklch(0.52 0 0)",
-                    fontSize: 10,
-                    fontFamily: "JetBrains Mono",
-                  }}
-                  axisLine={false}
-                  tickLine={false}
-                />
-                <YAxis
-                  domain={[80, 100]}
-                  tick={{
-                    fill: "oklch(0.52 0 0)",
-                    fontSize: 10,
-                    fontFamily: "JetBrains Mono",
-                  }}
-                  axisLine={false}
-                  tickLine={false}
-                  tickFormatter={(v: number) => `${v}%`}
-                />
-                <Tooltip
-                  contentStyle={{
-                    background: "oklch(0.12 0 0)",
-                    border: "1px solid oklch(0.22 0 0)",
-                    borderRadius: "6px",
-                    fontFamily: "JetBrains Mono",
-                    fontSize: 11,
-                  }}
-                  labelStyle={{ color: "oklch(0.93 0 0)" }}
-                  formatter={(val: number, name: string) => [
-                    `${val.toFixed(1)}%`,
-                    name,
-                  ]}
-                />
-                <Legend
-                  wrapperStyle={{
-                    fontFamily: "JetBrains Mono",
-                    fontSize: 10,
-                  }}
-                />
-                {Object.entries(areaColors).map(([key, color]) => (
-                  <Area
-                    key={key}
-                    type="monotone"
-                    dataKey={key}
-                    stroke={color}
-                    strokeWidth={1.5}
-                    fill={`url(#grad-${key.replace(/\s/g, "")})`}
-                    dot={false}
-                  />
-                ))}
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      </div>
-
-      {/* ── Predictive Wait Times ── */}
-      <div
-        className="rounded-lg border border-border bg-card"
-        data-ocid="wait-times-section"
-      >
-        <div className="flex items-center justify-between border-b border-border px-4 py-3">
-          <div className="flex items-center gap-2">
-            <Clock className="h-4 w-4 text-accent" />
-            <span className="font-mono text-xs font-semibold uppercase tracking-wider text-foreground">
-              Predictive Waiting Time Estimation
-            </span>
-          </div>
-          <span className="font-mono text-[10px] text-muted-foreground">
-            SORTED BY DELAY
-          </span>
-        </div>
-
-        {waitTimes.length === 0 ? (
-          <p className="px-4 py-10 text-center font-mono text-xs text-muted-foreground">
-            No segment data — click TICK to simulate
-          </p>
         ) : (
-          <>
-            {/* Stacked horizontal bar chart */}
-            <div className="p-4">
-              <ResponsiveContainer
-                width="100%"
-                height={Math.max(180, waitTimes.slice(0, 8).length * 34)}
-              >
-                <BarChart
-                  data={waitTimes.slice(0, 8)}
-                  layout="vertical"
-                  margin={{ top: 4, right: 24, left: 90, bottom: 0 }}
-                >
-                  <CartesianGrid
-                    strokeDasharray="3 3"
-                    stroke="oklch(0.22 0 0)"
-                    horizontal={false}
-                  />
-                  <XAxis
-                    type="number"
-                    tick={{
-                      fill: "oklch(0.52 0 0)",
-                      fontSize: 10,
-                      fontFamily: "JetBrains Mono",
-                    }}
-                    axisLine={false}
-                    tickLine={false}
-                    tickFormatter={(v: number) => `${v}s`}
-                  />
-                  <YAxis
-                    type="category"
-                    dataKey="segmentName"
-                    tick={{
-                      fill: "oklch(0.82 0 0)",
-                      fontSize: 10,
-                      fontFamily: "JetBrains Mono",
-                    }}
-                    axisLine={false}
-                    tickLine={false}
-                    width={90}
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      background: "oklch(0.12 0 0)",
-                      border: "1px solid oklch(0.22 0 0)",
-                      borderRadius: "6px",
-                      fontFamily: "JetBrains Mono",
-                      fontSize: 11,
-                    }}
-                    labelStyle={{ color: "oklch(0.93 0 0)" }}
-                    formatter={(val: number, name: string) => [
-                      `${val}s`,
-                      name === "congestionWait"
-                        ? "Congestion"
-                        : "Weather Impact",
-                    ]}
-                  />
-                  <Legend
-                    wrapperStyle={{
-                      fontFamily: "JetBrains Mono",
-                      fontSize: 10,
-                    }}
-                    formatter={(val: string) =>
-                      val === "congestionWait" ? "Congestion" : "Weather Impact"
-                    }
-                  />
-                  <Bar
-                    dataKey="congestionWait"
-                    stackId="wait"
-                    name="congestionWait"
-                    radius={[0, 0, 0, 0]}
-                  >
-                    {waitTimes.slice(0, 8).map((entry) => (
-                      <Cell
-                        key={entry.segmentId}
-                        fill={
-                          entry.congestionPct >= 70
-                            ? "oklch(0.62 0.24 24)"
-                            : entry.congestionPct >= 40
-                              ? "oklch(0.72 0.23 55)"
-                              : "oklch(0.62 0.25 195)"
-                        }
-                      />
-                    ))}
-                  </Bar>
-                  <Bar
-                    dataKey="weatherImpact"
-                    stackId="wait"
-                    fill="oklch(0.68 0.18 110)"
-                    radius={[0, 3, 3, 0]}
-                    name="weatherImpact"
-                  />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-
-            {/* Explainability rows */}
-            <div className="border-t border-border">
-              <div className="divide-y divide-border/50">
-                {waitTimes.slice(0, 5).map((est) => (
-                  <div
-                    key={est.segmentId}
-                    className="flex flex-col gap-1 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
-                    data-ocid={`wait-explain-${est.segmentId}`}
-                  >
-                    <div className="flex min-w-0 items-baseline gap-3">
-                      <span className="shrink-0 font-mono text-[11px] font-bold tabular-nums text-accent">
-                        {est.waitSeconds}s
-                      </span>
-                      <p className="min-w-0 text-xs text-muted-foreground">
-                        {waitExplanation(est)}
-                      </p>
-                    </div>
-                    <StatusBadge
-                      status={est.trafficLevel}
-                      className="shrink-0 self-start sm:self-center"
-                    />
-                  </div>
-                ))}
-              </div>
-            </div>
-          </>
+          <div
+            className="grid grid-cols-2 gap-3 md:grid-cols-4"
+            data-ocid="component-grid"
+          >
+            {displayComponents.map((comp) => (
+              <ComponentCard
+                key={comp.id}
+                comp={comp}
+                series={
+                  seriesMap[comp.id] ??
+                  buildUptimeSeries(comp.uptimePct, comp.status)
+                }
+              />
+            ))}
+          </div>
         )}
       </div>
+
+      {/* ── Wait Times Table + Event Log ── */}
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+        {/* Wait time table */}
+        <div
+          className="flex flex-col rounded-lg border border-border bg-card overflow-hidden"
+          data-ocid="wait-time-panel"
+        >
+          <div className="flex items-center gap-2 border-b border-border px-4 py-3">
+            <Timer className="h-4 w-4 text-primary" />
+            <span className="font-mono text-xs font-semibold uppercase tracking-wider text-foreground">
+              Predictive Wait Times
+            </span>
+            <Badge
+              variant="outline"
+              className="ml-auto border-primary/30 bg-primary/10 font-mono text-[9px] text-primary"
+            >
+              {displaySegments.length} SEGMENTS
+            </Badge>
+          </div>
+          {loading ? (
+            <div className="space-y-2 p-4">
+              {Array.from({ length: 5 }, (_, i) => `sk-wait-${i}`).map((k) => (
+                <Skeleton key={k} className="h-8 rounded" />
+              ))}
+            </div>
+          ) : (
+            <WaitTimeTable estimates={displaySegments} />
+          )}
+          <div className="border-t border-border/40 px-4 py-2 mt-auto">
+            <p className="font-mono text-[9px] text-muted-foreground">
+              Rows highlighted in amber indicate total wait &gt; 120s
+            </p>
+          </div>
+        </div>
+
+        {/* Event log */}
+        <div
+          className="flex flex-col rounded-lg border border-border bg-card overflow-hidden"
+          data-ocid="event-log-panel"
+        >
+          <div className="flex items-center gap-2 border-b border-border px-4 py-3">
+            <Zap className="h-4 w-4 text-accent" />
+            <span className="font-mono text-xs font-semibold uppercase tracking-wider text-foreground">
+              Alert Event Log
+            </span>
+            <Badge
+              variant="outline"
+              className={cn(
+                "ml-auto font-mono text-[9px]",
+                logEntries.some((e) => e.severity === "Critical")
+                  ? "border-destructive/35 bg-destructive/10 text-destructive"
+                  : "border-primary/30 bg-primary/10 text-primary",
+              )}
+            >
+              {logEntries.length} EVENTS
+            </Badge>
+          </div>
+          <ScrollArea
+            className="flex-1"
+            style={{ maxHeight: 380 }}
+            data-ocid="event-log-scroll"
+          >
+            {loading ? (
+              <div className="space-y-2 p-4">
+                {Array.from({ length: 4 }, (_, i) => `sk-log-${i}`).map((k) => (
+                  <Skeleton key={k} className="h-16 rounded" />
+                ))}
+              </div>
+            ) : logEntries.length === 0 ? (
+              <div className="flex flex-col items-center justify-center gap-2 py-14">
+                <CheckCircle2 className="h-7 w-7 text-primary/40" />
+                <p className="font-mono text-xs text-muted-foreground">
+                  All systems nominal
+                </p>
+                <p className="font-mono text-[10px] text-muted-foreground/60">
+                  No active alerts to display
+                </p>
+              </div>
+            ) : (
+              <div className="divide-y divide-border/25">
+                {logEntries.map((entry) => (
+                  <EventLogEntry key={entry.id} entry={entry} />
+                ))}
+              </div>
+            )}
+          </ScrollArea>
+          <div className="border-t border-border/40 px-4 py-2">
+            <p className="font-mono text-[9px] text-muted-foreground">
+              {logEntries.length} events · refreshes every 15s
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Uptime Chart: inline SVG area chart ── */}
+      <div
+        className="rounded-lg border border-border bg-card overflow-hidden"
+        data-ocid="uptime-chart"
+      >
+        <div className="flex items-center gap-2 border-b border-border px-4 py-3">
+          <Clock className="h-4 w-4 text-primary" />
+          <span className="font-mono text-xs font-semibold uppercase tracking-wider text-foreground">
+            Uptime History — 20 Simulated Ticks
+          </span>
+          <div className="ml-auto flex items-center gap-4">
+            {[
+              { label: "Sensor", color: "bg-primary" },
+              { label: "AI Model", color: "bg-accent" },
+              { label: "Database", color: "bg-[oklch(0.68_0.18_110)]" },
+              { label: "API", color: "bg-[oklch(0.55_0.15_280)]" },
+            ].map(({ label, color }) => (
+              <div key={label} className="flex items-center gap-1.5">
+                <span className={cn("h-2 w-2 rounded-full", color)} />
+                <span className="font-mono text-[9px] text-muted-foreground uppercase">
+                  {label}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="p-4">
+          <UptimeMultiChart components={displayComponents} />
+        </div>
+      </div>
     </div>
+  );
+}
+
+// ─── Multi-line Uptime Chart ───────────────────────────────────────────────────
+
+function UptimeMultiChart({ components }: { components: SystemComponent[] }) {
+  const W = 800;
+  const H = 120;
+  const PAD = { top: 8, right: 8, bottom: 20, left: 32 };
+  const innerW = W - PAD.left - PAD.right;
+  const innerH = H - PAD.top - PAD.bottom;
+
+  const typeGroups: Record<string, SystemComponent[]> = {
+    Sensor: components.filter((c) => c.componentType === "Sensor"),
+    "AI Model": components.filter((c) =>
+      c.componentType.toLowerCase().includes("ai"),
+    ),
+    Database: components.filter((c) => c.componentType === "Database"),
+    API: components.filter((c) => c.componentType === "API"),
+  };
+
+  const seriesDefs = [
+    {
+      key: "Sensor",
+      stroke: "rgba(98,213,228,0.85)",
+      fill: "rgba(98,213,228,0.07)",
+    },
+    {
+      key: "AI Model",
+      stroke: "rgba(217,170,59,0.85)",
+      fill: "rgba(217,170,59,0.07)",
+    },
+    {
+      key: "Database",
+      stroke: "rgba(140,200,100,0.85)",
+      fill: "rgba(140,200,100,0.07)",
+    },
+    {
+      key: "API",
+      stroke: "rgba(140,100,220,0.75)",
+      fill: "rgba(140,100,220,0.06)",
+    },
+  ];
+
+  const N = 20;
+
+  function buildSeries(comps: SystemComponent[]): number[] {
+    if (comps.length === 0)
+      return Array.from({ length: N }, () => 97 + (Math.random() - 0.5) * 2);
+    const base = comps.reduce((s, c) => s + c.uptimePct, 0) / comps.length;
+    const status = comps.some((c) => c.status === SystemStatus.Failed)
+      ? SystemStatus.Failed
+      : comps.some((c) => c.status === SystemStatus.Degraded)
+        ? SystemStatus.Degraded
+        : SystemStatus.Operational;
+    const variance =
+      status === SystemStatus.Failed
+        ? 18
+        : status === SystemStatus.Degraded
+          ? 8
+          : 2.5;
+    let v = base;
+    return Array.from({ length: N }, () => {
+      v = Math.max(60, Math.min(100, v + (Math.random() - 0.5) * variance));
+      return v;
+    });
+  }
+
+  const allSeries = seriesDefs.map(({ key }) =>
+    buildSeries(typeGroups[key] ?? []),
+  );
+
+  const minY = 60;
+  const maxY = 100;
+  const scaleX = (i: number) => PAD.left + (i / (N - 1)) * innerW;
+  const scaleY = (v: number) =>
+    PAD.top + innerH - ((v - minY) / (maxY - minY)) * innerH;
+
+  const yTicks = [65, 75, 85, 95, 100];
+
+  return (
+    <svg
+      viewBox={`0 0 ${W} ${H}`}
+      width="100%"
+      height={H}
+      preserveAspectRatio="none"
+      className="overflow-visible"
+      aria-hidden="true"
+    >
+      {/* Grid lines */}
+      {yTicks.map((tick) => (
+        <g key={tick}>
+          <line
+            x1={PAD.left}
+            y1={scaleY(tick)}
+            x2={W - PAD.right}
+            y2={scaleY(tick)}
+            stroke="rgba(255,255,255,0.04)"
+            strokeWidth={1}
+          />
+          <text
+            x={PAD.left - 4}
+            y={scaleY(tick) + 3}
+            fontSize={8}
+            fill="rgba(150,150,170,0.7)"
+            textAnchor="end"
+            fontFamily="JetBrains Mono, monospace"
+          >
+            {tick}%
+          </text>
+        </g>
+      ))}
+
+      {/* X axis ticks */}
+      {Array.from({ length: 5 }, (_, i) => Math.round((i / 4) * (N - 1))).map(
+        (idx) => (
+          <text
+            key={idx}
+            x={scaleX(idx)}
+            y={H - 4}
+            fontSize={8}
+            fill="rgba(150,150,170,0.6)"
+            textAnchor="middle"
+            fontFamily="JetBrains Mono, monospace"
+          >
+            T{idx + 1}
+          </text>
+        ),
+      )}
+
+      {/* Series */}
+      {seriesDefs.map(({ key, stroke, fill }, si) => {
+        const pts = allSeries[si];
+        const linePath = pts
+          .map((v, i) => `${i === 0 ? "M" : "L"} ${scaleX(i)} ${scaleY(v)}`)
+          .join(" ");
+        const areaPath = `${linePath} L ${scaleX(N - 1)} ${PAD.top + innerH} L ${scaleX(0)} ${PAD.top + innerH} Z`;
+        return (
+          <g key={key}>
+            <path d={areaPath} fill={fill} />
+            <path
+              d={linePath}
+              fill="none"
+              stroke={stroke}
+              strokeWidth={1.5}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </g>
+        );
+      })}
+    </svg>
   );
 }
