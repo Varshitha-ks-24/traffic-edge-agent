@@ -11,7 +11,13 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useSimulationStore } from "@/lib/simulationStore";
-import { computeOptimalRoute, getRoutes, getSegments } from "@/lib/trafficApi";
+import {
+  ALL_DISTRICTS,
+  FALLBACK_SEGMENTS,
+  computeOptimalRoute,
+  getRoutes,
+  getSegments,
+} from "@/lib/trafficApi";
 import { cn } from "@/lib/utils";
 import type { Route, TrafficSegment } from "@/types/traffic";
 import { useActor } from "@caffeineai/core-infrastructure";
@@ -31,15 +37,10 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-// ─── Constants ────────────────────────────────────────────────────────────────
-
-const DISTRICTS = ["Downtown", "Midtown", "Uptown", "Suburbs"] as const;
-type District = (typeof DISTRICTS)[number];
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const CONGESTION_RED = 70;
 const CONGESTION_AMBER = 35;
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function congestionColor(pct: number): string {
   if (pct >= CONGESTION_RED) return "oklch(0.62 0.24 24)";
@@ -90,7 +91,8 @@ function WaypointChain({ segments }: { segments: string[] }) {
 // ─── Optimal Route Result Panel ───────────────────────────────────────────────
 
 function OptimalRoutePanel({ route }: { route: Route }) {
-  const congLabel = congestionLabel(route.segments.length > 0 ? 35 : 20);
+  const avgCong = route.segments.length > 3 ? 55 : 20;
+  const congLabel = congestionLabel(avgCong);
 
   return (
     <div
@@ -390,11 +392,11 @@ export function Routing() {
   const lastUpdated = useSimulationStore((s) => s.lastUpdated);
 
   const [routes, setRoutes] = useState<Route[]>([]);
-  const [segments, setSegments] = useState<TrafficSegment[]>([]);
+  const [segments, setSegments] = useState<TrafficSegment[]>(FALLBACK_SEGMENTS);
   const [isLoadingRoutes, setIsLoadingRoutes] = useState(true);
 
-  const [fromDistrict, setFromDistrict] = useState<District | "">("");
-  const [toDistrict, setToDistrict] = useState<District | "">("");
+  const [fromDistrict, setFromDistrict] = useState<string>("");
+  const [toDistrict, setToDistrict] = useState<string>("");
   const [computedRoute, setComputedRoute] = useState<Route | null | undefined>(
     undefined,
   );
@@ -407,45 +409,54 @@ export function Routing() {
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Load segments always (fallback if actor unavailable), routes only when actor is ready
   const loadData = useCallback(async () => {
-    if (!actor) return;
-    try {
-      const [r, s] = await Promise.all([getRoutes(actor), getSegments(actor)]);
-      setRoutes(r);
-      setSegments(s);
-    } catch {
-      // silent retry
-    } finally {
-      setIsLoadingRoutes(false);
+    const [s] = await Promise.all([getSegments(actor)]);
+    setSegments(s);
+    if (actor) {
+      try {
+        const r = await getRoutes(actor);
+        setRoutes(r);
+      } catch {
+        // silent — routes panel just stays empty
+      }
     }
+    setIsLoadingRoutes(false);
   }, [actor]);
 
   useEffect(() => {
-    if (actorLoading || !actor) return;
     loadData();
+  }, [loadData]);
+
+  useEffect(() => {
+    if (actorLoading || !actor) return;
     intervalRef.current = setInterval(loadData, 10_000);
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
   }, [actor, actorLoading, loadData]);
 
-  // Auto-refresh computed route when snapshot changes (use ref to avoid infinite loop)
+  // Auto-refresh computed route on new snapshot (use ref to avoid infinite loop)
   useEffect(() => {
-    if (!snapshot || !computedRouteRef.current || !actor) return;
+    if (!snapshot || !computedRouteRef.current) return;
     const { fromDistrict: from, toDistrict: to } = computedRouteRef.current;
     if (!from || !to) return;
-    computeOptimalRoute(actor, from, to)
+    computeOptimalRoute(actor, from, to, segments)
       .then((r) => updateComputedRoute(r))
       .catch(() => {});
-  }, [snapshot, actor, updateComputedRoute]);
+  }, [snapshot, actor, segments, updateComputedRoute]);
 
   const handleCompute = async () => {
-    if (!actor || !fromDistrict || !toDistrict || fromDistrict === toDistrict)
-      return;
+    if (!fromDistrict || !toDistrict || fromDistrict === toDistrict) return;
     setIsComputing(true);
     updateComputedRoute(undefined);
     try {
-      const result = await computeOptimalRoute(actor, fromDistrict, toDistrict);
+      const result = await computeOptimalRoute(
+        actor,
+        fromDistrict,
+        toDistrict,
+        segments,
+      );
       updateComputedRoute(result);
     } catch {
       updateComputedRoute(null);
@@ -527,7 +538,7 @@ export function Routing() {
                 From
               </span>
               <Select
-                onValueChange={(v) => setFromDistrict(v as District)}
+                onValueChange={(v) => setFromDistrict(v)}
                 value={fromDistrict}
               >
                 <SelectTrigger
@@ -538,7 +549,7 @@ export function Routing() {
                   <SelectValue placeholder="Select origin…" />
                 </SelectTrigger>
                 <SelectContent>
-                  {DISTRICTS.map((d) => (
+                  {ALL_DISTRICTS.map((d) => (
                     <SelectItem key={d} value={d}>
                       {d}
                     </SelectItem>
@@ -558,7 +569,7 @@ export function Routing() {
                 To
               </span>
               <Select
-                onValueChange={(v) => setToDistrict(v as District)}
+                onValueChange={(v) => setToDistrict(v)}
                 value={toDistrict}
               >
                 <SelectTrigger
@@ -569,7 +580,7 @@ export function Routing() {
                   <SelectValue placeholder="Select destination…" />
                 </SelectTrigger>
                 <SelectContent>
-                  {DISTRICTS.map((d) => (
+                  {ALL_DISTRICTS.map((d) => (
                     <SelectItem key={d} value={d}>
                       {d}
                     </SelectItem>
@@ -620,7 +631,7 @@ export function Routing() {
               <OptimalRoutePanel route={computedRoute} />
             )}
 
-          {/* No route found */}
+          {/* No route found (only shown if truly null — shouldn't happen with local fallback) */}
           {!isComputing && computedRoute === null && (
             <div className="flex items-center gap-2 rounded-lg border border-accent/30 bg-accent/5 px-4 py-3 font-mono text-xs text-accent">
               <AlertTriangle className="h-4 w-4 shrink-0" />

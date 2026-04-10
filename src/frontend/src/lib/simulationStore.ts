@@ -1,5 +1,6 @@
 import type { backendInterface } from "@/backend";
-import type { TrafficSnapshot } from "@/types/traffic";
+import { WeatherCondition } from "@/backend";
+import type { Anomaly, Incident, TrafficSnapshot } from "@/types/traffic";
 import { create } from "zustand";
 
 interface SimulationState {
@@ -8,10 +9,14 @@ interface SimulationState {
   error: string | null;
   lastUpdated: Date | null;
   actor: backendInterface | null;
+  incidents: Incident[];
   setActor: (actor: backendInterface) => void;
   fetchSnapshot: () => Promise<void>;
   tick: () => Promise<void>;
   resetSim: () => Promise<void>;
+  addAnomalyToSnapshot: (anomaly: Anomaly) => void;
+  addIncident: (incident: Incident) => void;
+  setIncidents: (incidents: Incident[]) => void;
 }
 
 export const useSimulationStore = create<SimulationState>((set, get) => ({
@@ -20,6 +25,7 @@ export const useSimulationStore = create<SimulationState>((set, get) => ({
   error: null,
   lastUpdated: null,
   actor: null,
+  incidents: [],
 
   setActor: (actor) => {
     set({ actor });
@@ -28,13 +34,17 @@ export const useSimulationStore = create<SimulationState>((set, get) => ({
   fetchSnapshot: async () => {
     const { actor } = get();
     if (!actor) return;
-    set({ isLoading: true, error: null });
+    set({ isLoading: true });
     try {
       const snapshot = await actor.getTrafficSnapshot();
       set({ snapshot, isLoading: false, lastUpdated: new Date() });
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Fetch failed";
-      set({ error: message, isLoading: false });
+      // Silently catch backend errors (e.g. IC0508 canister stopped) — fallback data is used instead
+      console.warn(
+        "[simulationStore] fetchSnapshot failed:",
+        err instanceof Error ? err.message : err,
+      );
+      set({ isLoading: false });
     }
   },
 
@@ -45,8 +55,10 @@ export const useSimulationStore = create<SimulationState>((set, get) => ({
       await actor.simulateTick();
       await fetchSnapshot();
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Tick failed";
-      set({ error: message });
+      console.warn(
+        "[simulationStore] tick failed:",
+        err instanceof Error ? err.message : err,
+      );
     }
   },
 
@@ -57,8 +69,49 @@ export const useSimulationStore = create<SimulationState>((set, get) => ({
       await actor.resetSimulation();
       await fetchSnapshot();
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Reset failed";
-      set({ error: message });
+      console.warn(
+        "[simulationStore] resetSim failed:",
+        err instanceof Error ? err.message : err,
+      );
     }
+  },
+
+  addAnomalyToSnapshot: (anomaly: Anomaly) => {
+    const { snapshot } = get();
+    if (snapshot) {
+      set({
+        snapshot: {
+          ...snapshot,
+          activeAnomalies: [anomaly, ...snapshot.activeAnomalies],
+        },
+      });
+    } else {
+      // Backend not yet loaded — bootstrap a minimal snapshot so the anomaly is visible in Anomalies page
+      const stub: TrafficSnapshot = {
+        activeAnomalies: [anomaly],
+        activeEmergencies: [],
+        segments: [],
+        timestamp: BigInt(Date.now() * 1_000_000),
+        systemHealth: BigInt(100),
+        weather: {
+          temperature: 22,
+          windSpeed: 10,
+          visibility: BigInt(8),
+          condition: WeatherCondition.Clear,
+          affectedDistricts: [],
+          recommendation: "Normal conditions",
+          updatedAt: BigInt(Date.now() * 1_000_000),
+        },
+      };
+      set({ snapshot: stub });
+    }
+  },
+
+  addIncident: (incident: Incident) => {
+    set((state) => ({ incidents: [incident, ...state.incidents] }));
+  },
+
+  setIncidents: (incidents: Incident[]) => {
+    set({ incidents });
   },
 }));

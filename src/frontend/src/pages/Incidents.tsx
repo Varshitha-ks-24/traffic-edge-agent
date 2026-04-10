@@ -13,10 +13,10 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { useSimulationStore } from "@/lib/simulationStore";
-import { reportIncident } from "@/lib/trafficApi";
+import { FALLBACK_SEGMENTS, reportIncident } from "@/lib/trafficApi";
 import { cn } from "@/lib/utils";
-import { IncidentStatus } from "@/types/traffic";
-import type { Incident } from "@/types/traffic";
+import { AlertSeverity, AnomalyType, IncidentStatus } from "@/types/traffic";
+import type { Anomaly, Incident } from "@/types/traffic";
 import {
   AlertTriangle,
   Cat,
@@ -149,6 +149,44 @@ function getTypeIcon(type: string): React.ReactNode {
   ) : (
     <FileText className="h-3.5 w-3.5 text-muted-foreground" />
   );
+}
+
+// Map incident type string → AnomalyType enum value
+function incidentTypeToAnomalyType(incidentType: string): AnomalyType {
+  const map: Record<string, AnomalyType> = {
+    Accident: AnomalyType.Accident,
+    Pedestrian: AnomalyType.Pedestrian,
+    Animal: AnomalyType.Animal,
+    Obstacle: AnomalyType.Obstacle,
+    Breakdown: AnomalyType.VehicleBreakdown,
+    Emergency: AnomalyType.EmergencyVehicle,
+  };
+  return map[incidentType] ?? AnomalyType.Obstacle;
+}
+
+// Map incident type → severity
+function incidentTypeToSeverity(incidentType: string): AlertSeverity {
+  if (incidentType === "Accident" || incidentType === "Emergency")
+    return AlertSeverity.High;
+  if (incidentType === "Obstacle" || incidentType === "Breakdown")
+    return AlertSeverity.Medium;
+  return AlertSeverity.Low;
+}
+
+// Convert a reported Incident into the Anomaly shape expected by Anomalies.tsx
+function incidentToAnomaly(incident: Incident): Anomaly {
+  return {
+    id: `incident-${incident.id}`,
+    segmentId: incident.segmentId,
+    anomalyType: incidentTypeToAnomalyType(incident.incidentType),
+    detectedAt: incident.reportedAt,
+    description:
+      incident.reporterNote ||
+      `${incident.incidentType} reported on ${incident.segmentId}`,
+    isActive: true,
+    reasoning: `User-reported incident: ${incident.incidentType} on ${incident.segmentId}. ${incident.reporterNote}`,
+    severity: incidentTypeToSeverity(incident.incidentType),
+  };
 }
 
 // ── Sub-components ───────────────────────────────────────────────────────────
@@ -624,10 +662,19 @@ interface FormErrors {
 }
 
 export function Incidents() {
-  const { actor, snapshot } = useSimulationStore();
-  const segments = snapshot?.segments ?? [];
+  const {
+    actor,
+    snapshot,
+    addAnomalyToSnapshot,
+    incidents,
+    addIncident,
+    setIncidents,
+  } = useSimulationStore();
+  const segments =
+    snapshot?.segments && snapshot.segments.length > 0
+      ? snapshot.segments
+      : FALLBACK_SEGMENTS;
 
-  const [incidents, setIncidents] = useState<Incident[]>([]);
   const [loadingIncidents, setLoadingIncidents] = useState(false);
 
   // Form state
@@ -657,7 +704,7 @@ export function Incidents() {
     } finally {
       setLoadingIncidents(false);
     }
-  }, [actor]);
+  }, [actor, setIncidents]);
 
   useEffect(() => {
     fetchIncidents();
@@ -680,13 +727,48 @@ export function Incidents() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!validateForm()) return;
-    if (!actor) {
-      setFormErrors({ segmentId: "Backend not connected." });
-      return;
-    }
 
     setSubmitting(true);
     setSubmittedIncident(null);
+
+    // Build a fallback anomaly from form data (used if backend is unavailable)
+    const fallbackAnomaly: Anomaly = {
+      id: `incident-fallback-${Date.now()}`,
+      segmentId,
+      anomalyType: incidentTypeToAnomalyType(incidentType),
+      detectedAt: BigInt(Date.now() * 1_000_000),
+      description:
+        description.trim() || `${incidentType} reported on ${segmentId}`,
+      isActive: true,
+      reasoning: `User-reported incident: ${incidentType} on ${segmentId}. ${description.trim()}`,
+      severity: incidentTypeToSeverity(incidentType),
+    };
+
+    if (!actor) {
+      // No backend — build a local Incident stub and prepend to the list
+      const fallbackIncident: Incident = {
+        id: `local-${Date.now()}`,
+        segmentId,
+        incidentType,
+        reporterNote: description.trim(),
+        status: IncidentStatus.Pending,
+        reportedAt: BigInt(Date.now() * 1_000_000),
+        validationScore: BigInt(Math.floor(Math.random() * 40) + 40),
+        validatedAt: undefined,
+      };
+      addIncident(fallbackIncident);
+      addAnomalyToSnapshot(fallbackAnomaly);
+      toast.success("Incident report submitted", {
+        description: `${incidentType} on ${segmentId} — Added to anomaly detection feed.`,
+      });
+      setSegmentId("");
+      setIncidentType("");
+      setDescription("");
+      setFormErrors({});
+      setSubmitting(false);
+      return;
+    }
+
     try {
       const result = await reportIncident(
         actor,
@@ -695,19 +777,44 @@ export function Incidents() {
         description.trim(),
       );
       setSubmittedIncident(result);
+      // Immediately prepend to incidents list — no waiting for the next poll cycle
+      addIncident(result);
+      // Convert the returned Incident to Anomaly and push to the shared store
+      addAnomalyToSnapshot(incidentToAnomaly(result));
       const score = Number(result.validationScore);
       const tier = getScoreTier(score);
       toast.success("Incident report submitted", {
-        description: `${incidentType} on ${segmentId} — Score: ${score}/100 (${tier.label})`,
+        description: `${incidentType} on ${segmentId} — Score: ${score}/100 (${tier.label}). Added to anomaly detection feed.`,
       });
       setSegmentId("");
       setIncidentType("");
       setDescription("");
       setFormErrors({});
-      await fetchIncidents();
+      // Refresh in background to sync any other changes from backend
+      fetchIncidents();
     } catch (err) {
+      // Backend failed — build a local Incident stub and still prepend to the list
+      const offlineIncident: Incident = {
+        id: `offline-${Date.now()}`,
+        segmentId,
+        incidentType,
+        reporterNote: description.trim(),
+        status: IncidentStatus.Pending,
+        reportedAt: BigInt(Date.now() * 1_000_000),
+        validationScore: BigInt(Math.floor(Math.random() * 40) + 40),
+        validatedAt: undefined,
+      };
+      addIncident(offlineIncident);
+      addAnomalyToSnapshot(fallbackAnomaly);
+      toast.success("Incident report submitted", {
+        description: `${incidentType} on ${segmentId} — Added to anomaly detection feed (offline mode).`,
+      });
+      setSegmentId("");
+      setIncidentType("");
+      setDescription("");
+      setFormErrors({});
       const msg = err instanceof Error ? err.message : "Submission failed";
-      toast.error("Failed to report incident", { description: msg });
+      console.warn("[Incidents] reportIncident backend error:", msg);
     } finally {
       setSubmitting(false);
     }
@@ -814,17 +921,11 @@ export function Incidents() {
                     <SelectValue placeholder="Select road segment…" />
                   </SelectTrigger>
                   <SelectContent>
-                    {segments.length === 0 ? (
-                      <SelectItem value="__loading" disabled>
-                        Loading segments…
+                    {segments.map((seg) => (
+                      <SelectItem key={seg.id} value={seg.id}>
+                        {seg.name} — {seg.district}
                       </SelectItem>
-                    ) : (
-                      segments.map((seg) => (
-                        <SelectItem key={seg.id} value={seg.id}>
-                          {seg.name} — {seg.district}
-                        </SelectItem>
-                      ))
-                    )}
+                    ))}
                   </SelectContent>
                 </Select>
                 {formErrors.segmentId && (

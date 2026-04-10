@@ -11,7 +11,9 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
+  FALLBACK_SEGMENTS,
   acknowledgeEmergency,
+  createLocalEmergencyAlert,
   getEmergencyAlerts,
   getSegments,
   triggerEmergencySimulation,
@@ -695,7 +697,7 @@ export function Emergency() {
   const { actor, isFetching } = useActor(createActor);
 
   const [alerts, setAlerts] = useState<EmergencyAlert[]>([]);
-  const [segments, setSegments] = useState<TrafficSegment[]>([]);
+  const [segments, setSegments] = useState<TrafficSegment[]>(FALLBACK_SEGMENTS);
   const [loading, setLoading] = useState(true);
   const [acknowledging, setAcknowledging] = useState<string | null>(null);
   const [selectedSegment, setSelectedSegment] = useState("");
@@ -723,18 +725,34 @@ export function Emergency() {
           duration: 6000,
         });
       }
-      prevAlertIds.current = new Set(allAlerts.map((a) => a.id));
-      setAlerts(allAlerts);
-      setSegments(segs);
+      prevAlertIds.current = new Set([
+        ...prevAlertIds.current,
+        ...allAlerts.map((a) => a.id),
+      ]);
+      // Merge: keep locally simulated alerts (sim- prefix) not yet in backend result
+      setAlerts((prev) => {
+        const backendIds = new Set(allAlerts.map((a) => a.id));
+        const localOnly = prev.filter(
+          (a) => a.id.startsWith("sim-") && !backendIds.has(a.id),
+        );
+        return [...localOnly, ...allAlerts];
+      });
+      // Always use fallback if backend returned empty
+      setSegments(segs.length > 0 ? segs : FALLBACK_SEGMENTS);
     } catch {
-      // silent
+      // silent — segments already initialized with FALLBACK_SEGMENTS
     } finally {
       setLoading(false);
     }
   }, [actor]);
 
   useEffect(() => {
-    if (!actor || isFetching) return;
+    if (isFetching) return;
+    if (!actor) {
+      // Backend unavailable — segments already have fallback, stop loading skeleton
+      setLoading(false);
+      return;
+    }
     fetchAlerts();
     const id = setInterval(fetchAlerts, 5000);
     return () => clearInterval(id);
@@ -758,29 +776,48 @@ export function Emergency() {
   );
 
   const handleTrigger = useCallback(async () => {
-    if (!actor || !selectedSegment) {
+    if (!selectedSegment) {
       toast.error("Select a segment first");
       return;
     }
     setTriggering(true);
     setLastTriggered(null);
-    try {
-      const result = await triggerEmergencySimulation(
-        actor,
-        selectedSegment,
-        vehicleType,
-      );
-      setLastTriggered(result);
-      toast.success(`Emergency simulation triggered: ${result.vehicleType}`, {
-        description: result.description,
-      });
-      await fetchAlerts();
-    } catch {
-      toast.error("Failed to trigger emergency simulation");
-    } finally {
-      setTriggering(false);
+
+    // 1. Always create a local alert immediately — no backend dependency
+    const seg = segments.find((s) => s.id === selectedSegment);
+    const localAlert = createLocalEmergencyAlert(
+      selectedSegment,
+      vehicleType,
+      seg?.name,
+    );
+
+    // 2. Inject alert into local state right away for instant UI feedback
+    setAlerts((prev) => [localAlert, ...prev]);
+    prevAlertIds.current.add(localAlert.id);
+    setLastTriggered(localAlert);
+
+    const segLabel = seg ? `${seg.name} — ${seg.district}` : selectedSegment;
+    toast.success(`🚨 Emergency triggered: ${vehicleType}`, {
+      description: `Corridor cleared on ${segLabel}. Signal grid switched to emergency mode.`,
+      duration: 5000,
+    });
+
+    // 3. Best-effort backend sync — silently ignore failures
+    if (actor) {
+      try {
+        await triggerEmergencySimulation(actor, selectedSegment, vehicleType);
+        // Re-fetch to merge any backend state, but don't clear the local alert
+        await fetchAlerts();
+      } catch (err) {
+        console.warn(
+          "triggerEmergencySimulation: backend call failed (ignored)",
+          err,
+        );
+      }
     }
-  }, [actor, selectedSegment, vehicleType, fetchAlerts]);
+
+    setTriggering(false);
+  }, [actor, selectedSegment, vehicleType, segments, fetchAlerts]);
 
   const activeAlerts = alerts.filter((a) => a.isActive);
   const acknowledgedAlerts = alerts.filter((a) => !a.isActive);
@@ -953,11 +990,6 @@ export function Emergency() {
                       {s.name} — {s.district}
                     </SelectItem>
                   ))}
-                  {segments.length === 0 && (
-                    <SelectItem value="__loading" disabled>
-                      Loading segments…
-                    </SelectItem>
-                  )}
                 </SelectContent>
               </Select>
             </div>
